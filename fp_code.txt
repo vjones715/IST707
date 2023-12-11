@@ -1,0 +1,386 @@
+Code
+#install packages
+install.packages("tm")
+install.packages("slam")
+install.packages("quanteda")
+install.packages('proxy')
+install.packages("tidytext")
+install.packages("factoextra")
+install.packages("mclust")
+install.packages("useful")
+install.packages('arules')
+install.packages('arulesViz')
+install.packages("tidyverse")
+install.packages("e1071")
+install.packages("reader")
+install.packages("rpart")
+install.packages("rattle")
+install.packages("rpart.plot")
+install.packages("RColorBrewer")
+install.packages("Cairo")
+install.packages("naivebayes")
+
+#Load Libraries
+library(stats)
+library(dplyr)
+library(ggplot2)
+library(ggfortify)
+library(readr)
+library(arules)
+library(arulesViz)
+library(useful)
+library(tm)
+library(stringr)
+library(slam)
+library(quanteda)
+library(SnowballC)
+library(arules)
+library(proxy)
+library(cluster)
+library(stringi)
+library(proxy)
+library(Matrix)
+library(tidytext) 
+library(plyr) 
+library(ggplot2)
+library(factoextra) 
+library(mclust)
+library(reader)
+library(e1071)
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+library(Cairo)
+library(naivebayes)
+
+##########################Construct Data Set##############################################
+
+#Load Project data from csv
+
+setwd("//cloud//project//cloud_data")
+
+library(readr)
+rdO <- read_csv("Cloud_Data/HSC_HHBN.csv")
+rdH <- read_csv("Cloud_Data/OPS_HHBN.csv")
+rdI <- read_csv("Cloud_Data/IS_HHBN.csv")
+rdS <- read_csv("Cloud_Data/SIG_HHBN.csv")
+
+#Omit physical limitation profiles
+rdO<-rdO %>% filter(rdO$IsAlternative=="FALSE") 
+rdH<-rdH %>% filter(rdH$IsAlternative=="FALSE") 
+rdI<-rdI %>% filter(rdI$IsAlternative=="FALSE")  
+rdS<-rdS %>% filter(rdS$IsAlternative=="FALSE")
+
+str(rdO)
+view(rdO)
+
+####Sample each data set, complete records only removing null records from Last APFT Date######
+spl_rdO<-sample_n(rdO[complete.cases(rdO$LastApft),], size= 75)
+spl_rdH<-sample_n(rdH[complete.cases(rdH$LastApft),], size= 75)
+spl_rdI<-sample_n(rdI[complete.cases(rdI$LastApft),], size= 75)
+spl_rdS<-sample_n(rdS[complete.cases(rdS$LastApft),], size= 75)
+
+view(spl_rdO)
+
+#combine data sets
+project_rd<- rbind(spl_rdO, spl_rdH, spl_rdI, spl_rdS) 
+
+
+view(project_rd)
+
+######Data Clean#####
+
+
+#since R cannot analyze Time effectively, I've turned run times into integers
+project_rd$RawRun<-str_replace(project_rd$RawRun,":",".") #replace run colon with decimal
+project_rd$RawRun<-str_replace(project_rd$RawRun,":00"," ") #replace milliseconds with null
+project_rd$RawRun <- as.integer(project_rd$RawRun)#convert to numeric value
+project_rd$Sex<-str_replace(project_rd$Sex,"F","Female")
+project_rd$Sex<-str_replace(project_rd$Sex,"M","Male")
+
+pd<-project_rd
+pd$AgeRange<-cut(pd$Age,breaks=c(17,21,26,31,36,41,46,51,60),labels=c("17-21","22-26","27-31","32-36",
+                                                                      "37-41","42-46","47-51","52+"))
+
+##Create Tiers
+#Based on predetermined factors:
+#Tier 1: Soldiers who score 90 or above in all three events
+#Tier 2: Soldiers who score between 240-280 (score less than 90 in one or more events)
+#Tier 3: Soldiers who score 239 and below
+#Tier 4: Soldier fails test
+
+pd$Tier<- ifelse(pd$PushupScore>89 & pd$SitupScore>89 & pd$RunScore > 89 ,"Tier 1", 
+                 ifelse(pd$PushupScore<90 & pd$Score >239 | pd$SitupScore<90 & pd$Score >239 | pd$RunScore<90 & pd$Score >239, "Tier 2", 
+                        ifelse(pd$Score<240 & pd$PassFail=="Pass","Tier 3", "Tier 4" 
+                               
+                        )
+                 ))
+
+view(pd)
+
+summary(pd)
+
+#Calculate mean
+pd %>% summarize(Avg = mean(Score)) #total
+pd %>% summarize(Avg = mean(Age)) #total
+pd %>% filter(Sex=="Male") %>% summarize(Avg = mean(Age)) #male
+pd %>% filter(Sex=="Male")%>% summarize(Avg = mean(Score)) #male
+pd %>% filter(Sex=="Female") %>% summarize(Avg = mean(Age)) #female
+pd %>% filter(Sex=="Female")%>% summarize(Avg = mean(Score)) #female
+
+
+#####Visuals####
+
+view(pd)
+g<-ggplot(pd,aes(x=Age,y=Score,shape=Sex,fill=Score, title="APFT Score Distribution Scatterplot"))+geom_point(size=3.5)+geom_hline(yintercept = 180)+scale_shape_manual(values=c(21,23))+scale_fill_gradient(low="red",high="green",breaks=seq(100,300, by=40),guide=guide_legend(override.aes=list(shape=21)))
+g
+
+##dot plot
+dg<-ggplot(pd,aes(x=Sex,y=Score))+geom_dotplot(binaxis="y",binwidth=10,stackdir="center")+geom_hline(yintercept = 180)
+dg
+
+##Histogram of total scores
+hist(pd$Score)
+
+##Tiers Pie Chart
+tiers <-table(pd$Tier)
+tiers
+pie(tiers)
+
+#####Association Rule Mining
+
+install.packages("arules")
+install.packages("arulesViz")
+
+library("arules")
+library("arulesViz")
+
+#Create dataframe
+str(pd2)
+apd <-pd2[,c("MOS","Score","Tier")]
+
+# Fitting model
+# Training Apriori on the dataset
+set.seed = 250 # Setting seed
+
+associa_rules1 <- apriori(data=apd, parameter=list (supp=0.001,conf = 0.08), appearance = list (rhs="Tier=Tier 1"))
+associa_rules2 <- apriori(data=apd, parameter=list (supp=0.001,conf = 0.08), appearance = list (rhs="Tier=Tier 2"))
+associa_rules3 <- apriori(data=apd, parameter=list (supp=0.001,conf = 0.08), appearance = list (rhs="Tier=Tier 3"))
+associa_rules4 <- apriori(data=apd, parameter=list (supp=0.001,conf = 0.08), appearance = list (rhs="Tier=Tier 4"))
+
+# Plot,
+plot(apd, topN = 10)
+
+
+# Visualizing the results
+inspect(head(sort(associa_rules1, by = "confidence"), 5))
+inspect(head(sort(associa_rules2, by = "confidence"), 5))
+inspect(head(sort(associa_rules3, by = "confidence"), 5))
+inspect(head(sort(associa_rules4, by = "confidence"), 5))
+plot(associa_rules1, method = "graph", 
+     measure = "confidence", shading = "lift")
+
+pd2<-pd[c(1,5,14,18,19,20,21,22,23,24,25,26,27)]
+view(pd2)
+
+
+###MALES####
+pd_male<-pd2[c(1,2,3,4,5,6,7,8,9,10,13)]
+pd_male<-pd2 %>% filter(pd2$Sex=="Male")
+view(pd_male)
+
+mtiers<-table(pd_male$Tier)
+tiers
+pie(mtiers)
+
+###FEMALES####
+pd_female<-pd2[c(1,2,3,4,5,6,7,8,9,10,13)]
+pd_female<-pd2 %>% filter(pd2$Sex=="Female")
+view(pd_female)
+
+ftiers<-table(pd_female$Tier)
+ftiers
+pie(ftiers)
+
+#######Normalize apd (ineffective for each dataframe)
+#Create Matrix
+#apdmatrix<-as.matrix(apd)
+
+#Normalize fedfilesmatrix
+#ffn1<-apply(apdmatrix,1,function(i)round(i/sum(i),3))
+#apdnorm<-t(ffn1)
+
+#verify normalization
+#(apdmatrix[1:11,1:10])
+#(apdnorm[1:11,1:10])
+
+#Kmeans 
+allkmeans<-kmeans(apd[,2],4)
+(allkmeans$cluster)
+kmeanstable<-table(rownames(apd),allkmeans$cluster)
+kmeanstable
+plot(allkmeans,apd,title="K-Means Results",xlab="",ylab="")
+
+str(apd)
+
+#Kmeans Males
+male_kmeans<-kmeans(pd_male,3)
+(male_kmeans$cluster)
+kmeansamaletable<-table(rownames(pd_male),male_kmeans$cluster)
+kmeansamaletable
+plot(male_kmeans,pd_male,title="K-Means - Male Results",xlab="",ylab="")
+
+#Kmeans Female
+female_kmeans<-kmeans(pd_female,3)
+(female_kmeans$cluster)
+kmeansafemaletable<-table(rownames(pd_female),female_kmeans$cluster)
+kmeansafemaletable
+plot(female_kmeans,pd_female,title="K-Means - Female Results",xlab="",ylab="")
+
+str(pd_female)
+str(pd_male)
+
+#create dataframes excluding NA columns
+traindigitdf<-subset(pd_male, select = -c(1,2,11,12,13))
+testdigitdf<-subset(pd_female, select = -c(1,2,11,12,13))
+
+#convert the data to numeric values and factors
+traindigitdf<-data.frame(sapply(traindigitdf, as.numeric))
+testdigitdf<-data.frame(sapply(testdigitdf, as.numeric))
+traindigitdf$Score<-as.factor(traindigitdf$Score)
+noheadertrn<-data.frame(traindigitdf[,-1])
+str(data.frame(testdigitdf[,]))
+
+#knn train
+ksize <- round(sqrt(nrow(traindigitdf)))
+ksize
+
+#Predict Train Data
+knn_trn <- class::knn(train=traindigitdf[-1], test =traindigitdf[-1], cl=traindigitdf$Score, k = ksize, prob=FALSE)
+print(knn_trn)
+crazytrain_knn <- (table(knn_trn, traindigitdf$Score))
+crazytrain_knn_chk <- sum(diag(crazytrain_knn))/nrow(traindigitdf)
+crazytrain_knn
+crazytrain_knn_chk
+#0.15
+
+#knn test
+ksize2 <- round(sqrt(nrow(testdigitdf)))
+ksize2
+
+#Predict Test Data
+knn_tst <- class::knn(train=testdigitdf[-1], test =testdigitdf[-1], cl=testdigitdf$Score, k = ksize2, prob=FALSE)
+print(knn_tst)
+crazytst_knn <- (table(knn_tst, testdigitdf$Score))
+crazytst_knn_chk <- sum(diag(crazytst_knn))/nrow(testdigitdf)
+crazytst_knn
+crazytst_knn_chk
+
+summary(pd_male)
+
+view(pd_male)
+
+library(rpart)
+#Decision Tree
+train_dt<-rpart(traindigitdf$Score~., data=traindigitdf, method="class")
+
+library(rpart.plot)
+library(rattle)
+#plot decision tree
+fancyRpartPlot(train_dt)
+
+# Visualizing the results
+inspect(sort(associa_rules, by = 'lift')[1:10])
+plot(associa_rules, method = "graph", 
+     measure = "confidence", shading = "lift")
+
+#create dataframes excluding NA columns
+traindigitdf<-subset(pd_male, select = -c(1,2,11,12))
+testdigitdf<-subset(pd_female, select = -c(1,2,11,12))
+
+traindigitdf<-data.frame(sapply(traindigitdf, as.numeric))
+testdigitdf<-data.frame(sapply(testdigitdf, as.numeric))
+traindigitdf$Score<-as.factor(traindigitdf$Score)
+noheadertrn<-data.frame(traindigitdf[,-1])
+str(data.frame(testdigitdf[,]))
+
+#knn
+ksize <- round(sqrt(nrow(traindigitdf)))
+ksize
+
+#Predict Train Data
+knn_trn <- class::knn(train=traindigitdf[-1], test =traindigitdf[-1], cl=traindigitdf$Score, k = ksize, prob=FALSE)
+print(knn_trn)
+crazytrain_knn <- (table(knn_trn, traindigitdf$Score))
+crazytrain_knn_chk <- sum(diag(crazytrain_knn))/nrow(traindigitdf)
+crazytrain_knn
+crazytrain_knn_chk
+#0.1949153
+
+summary(pd_male)
+
+view(pd_male)
+
+#decision tree
+train_dt<-rpart(traindigitdf$Score~., data=traindigitdf, method="class")
+summary(train_dt)
+fancyRpartPlot(train_dt)
+
+#prune
+train_dt<- prune(train_dt, cp=.016)
+fancyRpartPlot(train_dt)
+summary(train_dt)
+
+#predict train data
+predtrn_dt<- predict(train_dt, noheadertrn, type ="class")
+
+#confusion matrix
+crazytrain_dt<- table(predtrn_dt, traindigitdf$Score)
+crazytrain_dt
+
+#validate prediction accuracy
+sum(diag(crazytrain_dt))/nrow(traindigitdf)
+
+
+#predict test data
+predtst_dt<- predict(train_dt, testdigitdf, type = "class")
+print(predtst_dt)
+
+#confusion matrix
+crazytst_dt<- table(predtst_dt, testdigitdf$Score)
+crazytst_dt
+
+#validate prediction accuracy
+sum(diag(crazytst_dt))/nrow(testdigitdf)
+
+library(naivebayes)
+library(e1071)
+## Naive Bayes Model
+traindigit_nb<- naiveBayes(traindigitdf$Score~., data=traindigitdf, na.action=na.pass)
+
+table(traindigit_nb)
+length(traindigit_nb)
+
+#predict train data
+predtrn_nb<-predict(traindigit_nb, noheadertrn)
+predtrn_nb
+
+#confusion matrix
+crazytrain_nb<- table(traindigitdf$Score, predtrn_nb)
+crazytrain_nb
+
+#validate prediction accuracy
+sum(diag(crazytrain_nb))/nrow(traindigitdf)
+
+
+#predict test data
+predtst_nb<-predict(traindigit_nb,testdigitdf)
+table(predtst_nb)
+
+#confusion matrix
+crazytst_nb<- table(testdigitdf$Score, predtst_nb)
+crazytst_nb
+
+#validate prediction accuracy
+sum(diag(crazytst_nb))/nrow(testdigitdf)
